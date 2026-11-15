@@ -1,9 +1,11 @@
-// VOIDSTRIKE v2 — the screenshot scenes behind ?shot=start|play|boss|end. Each one
+// VOIDSTRIKE v3 — the screenshot scenes behind ?shot=start|play|boss|end. Each one
 // plays the real rules forward from a fresh world for a fixed stretch, steered by
 // an autopilot that dodges bullets, dashes out of danger, bombs when swamped
 // and shoots the nearest hostile, so every frame is what a real game looks like
 // and the same seed always gives the same frame. The autopilot also picks the
 // first upgrade card at every draft, so a staged run plays the v2 systems too.
+// On siege waves it hunts the enemy closest to the beacon first — it defends
+// the Last Star, so the staged siege frame shows the beacon under attack.
 import { VIEW, STEP, PLAYER } from './config.js';
 import { SCREEN_OVER, SCREEN_PLAY, SCREEN_VICTORY, SCREEN_UPGRADE } from './world.js';
 
@@ -55,12 +57,15 @@ export function autopilotInput(world, dodge = true) {
     }
   }
 
-  // Nearest hostile (the boss first, always).
+  // Nearest hostile (the boss first, always). On a siege wave the autopilot
+  // defends the beacon: it hunts the enemy closest to the Last Star.
   let target = state.boss;
   if (!target) {
     let best = Infinity;
     for (const e of state.enemies) {
-      const d = Math.hypot(e.x - p.x, e.y - p.y);
+      const d = state.siege
+        ? Math.hypot(e.x - state.beacon.x, e.y - state.beacon.y)
+        : Math.hypot(e.x - p.x, e.y - p.y);
       if (d < best) {
         best = d;
         target = e;
@@ -130,18 +135,17 @@ function playFor(world, seconds, dodge = true) {
  */
 export function stageShot(name, world) {
   if (name === 'play') {
-    // A high wave, a busy frame: hostiles on screen, bullets in the air, a
-    // real score — and one dash right before the capture so the afterimages
-    // are in the frame.
+    // A siege wave, the beacon under attack: hostiles on screen, bullets in
+    // the air, a besieger close to the Last Star, a real score — and one dash
+    // right before the capture so the afterimages are in the frame.
+    const siegeFrame = (s) => s.wave >= 3 && s.siege && s.enemies.length >= 6
+      && s.bullets.length >= 5 && s.score > 5000
+      && s.enemies.some((e) => e.kind === 'slicer')
+      && s.enemies.some((e) => Math.hypot(e.x - s.beacon.x, e.y - s.beacon.y) < 220);
     for (let attempt = 0; attempt < 3; attempt += 1) {
       world.reset();
       world.startGame();
-      const reached = runUntil(
-        world,
-        (s) => s.wave >= 5 && s.enemies.length >= 6 && s.bullets.length >= 5 && s.score > 5000
-          && s.enemies.some((e) => e.kind === 'slicer'),
-        420,
-      );
+      const reached = runUntil(world, siegeFrame, 420);
       if (reached && world.state.screen === SCREEN_PLAY) {
         const inp = autopilotInput(world);
         world.step(STEP, { ...inp, dash: true });

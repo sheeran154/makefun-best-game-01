@@ -6,8 +6,10 @@
 
 A top-down arcade space shooter, built for the
 [best-game-01 bounty on make.fun](https://make.fun/bounty/best-game-01).
-Hostile swarms are pouring through the rift — hold the line, draft upgrades
-between waves, chain kills into combos, and break the Void Maw.
+You are **NOVA-7, Keeper of the Last Star** — a dying beacon at the middle
+of the field, the last light in the sector. Hostile swarms are pouring
+through the rift to snuff it out: hold the line, draft upgrades between
+waves, chain kills into combos, and break the Void Maw before the light dies.
 
 ## How to play
 
@@ -33,13 +35,32 @@ under `game/`.
 ## Rules
 
 - You have **3 lives**. Enemy fire and ramming cost one; a shield absorbs hits.
+- The **Last Star beacon has 12 hull**. It mends +2 after every cleared wave.
 - Kills chained within 2.5 seconds raise a **combo multiplier up to x8**.
 - Fallen enemies drop power-ups: **S** shield (3 hits), **W** spread shot,
   **R** rapid fire (12 s each), **+** an extra life, **B** a bomb restock.
 - Waves escalate: drifters, stingers, weavers, slicers, bulwarks and carriers,
   with a **boss — the Void Maw — every 5 waves**.
 - **Clear the wave 10 boss to win the sector.** Then endless mode keeps coming
-  with the score still climbing. Lose all 3 lives and the run ends.
+  with the score still climbing. Lose all 3 lives **or let the beacon fall**
+  and the run ends.
+
+## Defend the Last Star
+
+The beacon burns at the middle of the field, ringed in gold — the whole run
+is about keeping it lit. Every **3rd wave is a siege wave** (and so is every
+boss wave): the swarm stops hunting you and comes for the beacon instead.
+Besieging enemies wear an **ember-red ring** so you can spot the threat at a
+glance, and the beacon's hull bar sits under the wave counter in the HUD.
+
+- A besieger that rams the beacon takes 3 damage — and costs the beacon
+  **1 hull**. At 0 hull the beacon goes dark and the run ends, even with
+  lives to spare.
+- Kills made within 260 px of the beacon earn a **Guardian bonus: +100 score
+  times your combo** — defending the objective pays better than farming the
+  edges. Guardian kills are tallied on the victory screen.
+- Waves carry sector names in their banners — wave 3 is a siege in
+  *The Long Night*, the wave-10 boss comes for *The Dawn*.
 
 ## The upgrade draft
 
@@ -92,8 +113,9 @@ starfield is seeded — the game is fully original and fully offline.
 ## Screenshots
 
 `screenshots/` holds four real renders of the game's own code: the title
-screen, high-wave mid-action play, the phase-2 boss fight, and the victory
-screen with the drafted build. They were staged with
+screen with the mission briefing, a siege wave with the beacon under attack,
+the phase-2 boss fight around the beacon, and the victory screen —
+"THE LAST STAR ENDURES" — with the drafted build. They were staged with
 `?shot=start|play|boss|end&seed=20261116` (see `shots.json`); each scene
 plays the real rules forward with an autopilot, so the frame is what a real
 game looks like.

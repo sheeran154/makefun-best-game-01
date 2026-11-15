@@ -1,4 +1,4 @@
-// VOIDSTRIKE v2 — the world: one object holding every moving thing, the wave
+// VOIDSTRIKE v3 — the world: one object holding every moving thing, the wave
 // director, collisions and scoring. It knows nothing about the canvas or the DOM;
 // render.js draws whatever state it holds. All randomness flows through the
 // seeded RNG, so a seed replays the same game exactly.
@@ -7,7 +7,12 @@
 // i-frames, a screen-clearing bomb, two new enemy kinds (slicer, carrier that
 // splits into drones), elite variants from wave 4, and a second phase for the
 // wave-10 Void Maw.
-import { VIEW, STEP, PLAYER, DASH, BOMB, POWERUP, ENEMY, ELITE_MIN_WAVE, ELITE_CHANCE, BOSS_WAVE_EVERY, VICTORY_WAVE, COMBO_WINDOW, COMBO_MAX, UPGRADES, wavePlan } from './config.js';
+//
+// v3 systems: the Last Star beacon — a central objective. On siege waves
+// (every 3rd wave and every boss wave) enemies hunt the beacon instead of the
+// player; a ram costs the beacon hull, and at zero hull the run ends. Kills
+// near the beacon earn a Guardian bonus.
+import { VIEW, STEP, PLAYER, DASH, BOMB, POWERUP, ENEMY, ELITE_MIN_WAVE, ELITE_CHANCE, BOSS_WAVE_EVERY, VICTORY_WAVE, COMBO_WINDOW, COMBO_MAX, BEACON, SIEGE_EVERY, SECTOR_NAMES, UPGRADES, wavePlan } from './config.js';
 import { mulberry32, range, pick, shuffle } from './random.js';
 
 export const SCREEN_TITLE = 'title';
@@ -106,6 +111,12 @@ export function createWorld(seed) {
       bombsMax: BOMB.maxStock,
       upgradesPicked: [],
       upgradeDraft: null,
+      // The Last Star beacon: the objective every siege wave hunts. Its hull
+      // is a second life total for the run — at zero, the run ends.
+      beacon: { x: BEACON.x, y: BEACON.y, radius: BEACON.radius, hp: BEACON.maxHp, maxHp: BEACON.maxHp },
+      siege: false, // this wave's enemies hunt the beacon, not the player
+      guardianKills: 0, // kills made close enough to the beacon to count
+      overCause: null, // 'lives' | 'beacon' — named on the game-over screen
       player: {
         x: VIEW.width / 2,
         y: PLAYER.respawnY,
@@ -174,14 +185,18 @@ export function createWorld(seed) {
   function startWave(state, wave) {
     state.wave = wave;
     state.waveActive = true;
+    state.siege = wave % SIEGE_EVERY === 0 || wave % BOSS_WAVE_EVERY === 0;
     state.spawnQueue = shuffle(rng, wavePlan(wave));
     if (wave % BOSS_WAVE_EVERY === 0) state.spawnQueue.push('boss');
     state.spawnTimer = 0.4;
+    const sector = SECTOR_NAMES[(wave - 1) % SECTOR_NAMES.length];
     if (wave % BOSS_WAVE_EVERY === 0) {
-      state.banner = { text: '⚠ WARNING ⚠', sub: 'VOID MAW APPROACHES', t: 2.6, color: '#ff2e63' };
+      state.banner = { text: '⚠ WARNING ⚠', sub: `VOID MAW APPROACHES — ${sector}`, t: 2.6, color: '#ff2e63' };
       world.events.push(EVENT_BOSS);
+    } else if (state.siege) {
+      state.banner = { text: `WAVE ${wave} — SIEGE`, sub: `${sector} · DEFEND THE LAST STAR`, t: 2.4, color: '#ffd75e' };
     } else {
-      state.banner = { text: `WAVE ${wave}`, sub: wave === 1 ? 'HOSTILES INBOUND' : `${state.spawnQueue.length} HOSTILES`, t: 2.0, color: '#e8f6ff' };
+      state.banner = { text: `WAVE ${wave}`, sub: wave === 1 ? `${sector} · HOSTILES INBOUND` : `${sector} · ${state.spawnQueue.length} HOSTILES`, t: 2.0, color: '#e8f6ff' };
     }
   }
 
@@ -219,6 +234,8 @@ export function createWorld(seed) {
       // Fresh spawns cannot ram for a moment (carrier drones spawn on the player).
       spawnGrace: 0,
       alive: true,
+      // On a siege wave this enemy hunts the beacon, not the player.
+      siege: false,
     };
     if (kind === 'boss') {
       enemy.hp = def.hp + (state.wave - BOSS_WAVE_EVERY) * 40;
@@ -232,6 +249,9 @@ export function createWorld(seed) {
       enemy.maxHp = enemy.hp;
       enemy.score *= 2;
     }
+    // Siege waves send every non-boss enemy at the beacon. The boss still
+    // hunts the player — it is too big to ram a star.
+    if (kind !== 'boss') enemy.siege = state.siege;
     return enemy;
   }
 
@@ -281,11 +301,22 @@ export function createWorld(seed) {
       state.combo += 1;
       state.comboTimer = window;
       const mult = Math.min(state.combo, COMBO_MAX);
-      const gained = enemy.score * mult;
+      let gained = enemy.score * mult;
+      // Guardian bonus: a kill made close to the beacon is worth more — the
+      // player was defending the objective, not just farming score.
+      const nearBeacon = Math.hypot(enemy.x - state.beacon.x, enemy.y - state.beacon.y) < BEACON.guardianRadius;
+      let guardian = 0;
+      if (nearBeacon) {
+        guardian = BEACON.guardianBonus * mult;
+        gained += guardian;
+        state.guardianKills += 1;
+        world.events.push('guardian');
+      }
       state.score += gained;
       state.kills += 1;
       addFloater(state, enemy.x, enemy.y, `+${gained}`, mult > 1 ? '#ffd75e' : '#e8f6ff', mult > 1 ? 19 : 15);
-      if (mult >= 4) addFloater(state, enemy.x, enemy.y - 22, `COMBO x${mult}`, '#ffd75e', 15);
+      if (guardian > 0) addFloater(state, enemy.x, enemy.y - 22, `GUARDIAN +${guardian}`, '#ffd75e', 15);
+      else if (mult >= 4) addFloater(state, enemy.x, enemy.y - 22, `COMBO x${mult}`, '#ffd75e', 15);
       if (enemy.elite) addFloater(state, enemy.x, enemy.y + 22, 'ELITE DOWN', '#ffd75e', 15);
       dropPowerup(state, enemy.x, enemy.y, enemy.elite);
       world.events.push(enemy.kind === 'boss' ? 'boss-kill' : 'kill');
@@ -316,6 +347,7 @@ export function createWorld(seed) {
     if (state.lives <= 0) {
       p.alive = false;
       p.deathTimer = 1.4;
+      state.overCause = 'lives';
       world.events.push(EVENT_GAME_OVER);
     } else {
       p.invulnerable = PLAYER.invulnerableSeconds;
@@ -323,6 +355,30 @@ export function createWorld(seed) {
       p.y = PLAYER.respawnY;
       p.spreadTimer = 0;
       p.rapidTimer = 0;
+    }
+  }
+
+  // A besieger rammed the Last Star. At zero hull the beacon goes dark and
+  // the run ends — a second way to lose, distinct from losing all lives.
+  function damageBeacon(state) {
+    const b = state.beacon;
+    if (b.hp <= 0) return;
+    b.hp -= BEACON.ramDamage;
+    state.shake = Math.max(state.shake, 10);
+    burst(state, b.x, b.y, '#ffd75e', 22, 260, 3);
+    addFloater(state, b.x, b.y - 44, 'BEACON HIT', '#ffd75e', 17);
+    world.events.push('beacon-hit');
+    if (b.hp <= 0) {
+      b.hp = 0;
+      state.shake = Math.max(state.shake, 20);
+      state.flash = 0.6;
+      burst(state, b.x, b.y, '#ffd75e', 90, 420, 5);
+      burst(state, b.x, b.y, '#ffffff', 24, 300, 3);
+      state.player.alive = false;
+      state.player.deathTimer = 1.4;
+      state.overCause = 'beacon';
+      world.events.push('beacon-down');
+      world.events.push(EVENT_GAME_OVER);
     }
   }
 
@@ -399,13 +455,20 @@ export function createWorld(seed) {
     const dy = p.y - enemy.y;
     const dist = Math.hypot(dx, dy) || 1;
     const aim = Math.atan2(dy, dx);
+    // The hunt target: the player, unless this enemy is besieging — then it
+    // steers at the beacon. Shots are still aimed at the player (bullets
+    // cannot hurt a star); only movement and rams follow the hunt target.
+    const tdx = (enemy.siege ? state.beacon.x : p.x) - enemy.x;
+    const tdy = (enemy.siege ? state.beacon.y : p.y) - enemy.y;
+    const tdist = Math.hypot(tdx, tdy) || 1;
 
     if (enemy.kind === 'drifter') {
       enemy.y += ENEMY.drifter.speed * dt;
       enemy.x += Math.sin(enemy.t * 2.2) * 55 * dt;
+      if (enemy.siege) enemy.x += (tdx / tdist) * 40 * dt;
     } else if (enemy.kind === 'stinger') {
       enemy.y += ENEMY.stinger.speed * dt;
-      enemy.x += (dx / dist) * 90 * dt;
+      enemy.x += (tdx / tdist) * 90 * dt;
       if (enemy.fireTimer <= 0 && enemy.y > 0 && enemy.y < VIEW.height * 0.75) {
         enemy.fireTimer = 2.3;
         enemyShoot(state, enemy, aim + range(rng, -0.08, 0.08));
@@ -413,15 +476,20 @@ export function createWorld(seed) {
     } else if (enemy.kind === 'weaver') {
       enemy.y += ENEMY.weaver.speed * dt;
       enemy.x += Math.sin(enemy.t * 3.1) * 190 * dt;
+      if (enemy.siege) enemy.x += (tdx / tdist) * 55 * dt;
       if (enemy.fireTimer <= 0 && enemy.y > 0 && enemy.y < VIEW.height * 0.7) {
         enemy.fireTimer = 2.8;
         for (const off of [-0.28, 0, 0.28]) enemyShoot(state, enemy, aim + off, 210);
       }
     } else if (enemy.kind === 'bulwark') {
-      if (enemy.y < 130) {
+      // Besieging bulwarks hover lower, closer to the beacon, and drift
+      // toward it while they fire at the player.
+      const hoverY = enemy.siege ? 220 : 130;
+      if (enemy.y < hoverY) {
         enemy.y += ENEMY.bulwark.speed * dt;
       } else {
         enemy.x += Math.sin(enemy.t * 0.9) * 60 * dt;
+        if (enemy.siege) enemy.x += (tdx / tdist) * 45 * dt;
         if (enemy.fireTimer <= 0) {
           enemy.fireTimer = 3.1;
           enemy.burstLeft = 3;
@@ -453,26 +521,35 @@ export function createWorld(seed) {
         if (enemy.chargeTimer <= 0 && enemy.y > 40 && enemy.y < 420 && p.alive) {
           enemy.charging = true;
           enemy.chargeT = 0.5;
-          enemy.cvx = dx / dist;
-          enemy.cvy = dy / dist;
+          enemy.cvx = tdx / tdist;
+          enemy.cvy = tdy / tdist;
           world.events.push('enemy-shoot');
         }
       }
     } else if (enemy.kind === 'carrier') {
       // Slow freighter that hovers and lobs aimed shots; splits on death.
-      if (enemy.y < 110) {
+      // Besieging carriers hover lower, nearer the beacon.
+      const hoverY = enemy.siege ? 200 : 110;
+      if (enemy.y < hoverY) {
         enemy.y += ENEMY.carrier.speed * dt;
       } else {
         enemy.x += Math.sin(enemy.t * 0.8) * 50 * dt;
+        if (enemy.siege) enemy.x += (tdx / tdist) * 40 * dt;
         if (enemy.fireTimer <= 0) {
           enemy.fireTimer = 2.6;
           enemyShoot(state, enemy, aim + range(rng, -0.05, 0.05), 220);
         }
       }
     } else if (enemy.kind === 'drone') {
-      // Carrier shrapnel: small, fast, homes in and rams.
-      enemy.y += 90 * dt;
-      enemy.x += (dx / dist) * 150 * dt;
+      // Carrier shrapnel: small, fast, homes in and rams. Besieging drones
+      // home on the beacon instead of the player.
+      if (enemy.siege) {
+        enemy.y += (tdy / tdist) * 200 * dt;
+        enemy.x += (tdx / tdist) * 200 * dt;
+      } else {
+        enemy.y += 90 * dt;
+        enemy.x += (dx / dist) * 150 * dt;
+      }
     } else if (enemy.kind === 'boss') {
       // Phase 2 below half health: faster, a spiral barrage, elite summons.
       if (enemy.phase === 0 && enemy.hp <= enemy.maxHp * 0.5) {
@@ -668,6 +745,23 @@ export function createWorld(seed) {
         if (!p.alive) return;
       }
     }
+    // Besiegers ramming the Last Star: the rammer takes the hit, the beacon
+    // loses hull, and at zero hull the run is over. Only besieging enemies
+    // hurt it — a normal wave's drifters just fly past the light.
+    if (state.beacon.hp > 0) {
+      for (const enemy of state.enemies) {
+        if (!enemy.alive || !enemy.siege) continue;
+        const dx = enemy.x - state.beacon.x;
+        const dy = enemy.y - state.beacon.y;
+        const rr = enemy.radius + state.beacon.radius;
+        if (dx * dx + dy * dy < rr * rr) {
+          enemy.hp -= BEACON.enemyRamDamage;
+          if (enemy.hp <= 0) killEnemy(state, enemy);
+          damageBeacon(state);
+          if (state.beacon.hp <= 0) return;
+        }
+      }
+    }
     // Power-ups.
     for (const pu of state.powerups) {
       if (!pu.alive) continue;
@@ -816,6 +910,11 @@ export function createWorld(seed) {
         state.score += bonus;
         addFloater(state, VIEW.width / 2, VIEW.height / 2 - 40, `WAVE ${state.wave} CLEAR  +${bonus}`, '#ffd75e', 22);
         world.events.push(EVENT_WAVE_CLEAR);
+        // The beacon mends a little of its hull between waves.
+        if (state.beacon.hp < state.beacon.maxHp) {
+          state.beacon.hp = Math.min(state.beacon.maxHp, state.beacon.hp + BEACON.repairPerWave);
+          addFloater(state, state.beacon.x, state.beacon.y - 52, `BEACON MENDED +${BEACON.repairPerWave}`, '#ffd75e', 15);
+        }
         if (state.wave === VICTORY_WAVE && !state.endless) {
           state.floaters = [];
           state.screen = SCREEN_VICTORY;

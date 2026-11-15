@@ -1,4 +1,4 @@
-// VOIDSTRIKE v2 — entry point: the frame loop, the screens, and the wiring between
+// VOIDSTRIKE v3 — entry point: the frame loop, the screens, and the wiring between
 // input, world, sound and render. In normal play it runs the loop; with
 // ?shot=name&seed=N it stages one deterministic screenshot scene instead.
 import { VIEW, STEP } from './config.js';
@@ -65,6 +65,9 @@ function handleEvents(events) {
     else if (event === 'dash') sfx.dash();
     else if (event === 'bomb') sfx.bomb();
     else if (event === 'upgrade') sfx.upgrade();
+    else if (event === 'beacon-hit') sfx.beaconHit();
+    else if (event === 'guardian') sfx.guardian();
+    else if (event === 'beacon-down') sfx.beaconDown();
   }
 }
 
@@ -92,9 +95,11 @@ if (shotName) {
   window.__shotReady = true;
   const kinds = {};
   let elites = 0;
+  let beaconNear = 0;
   for (const e of world.state.enemies) {
     kinds[e.kind] = (kinds[e.kind] || 0) + 1;
     if (e.elite) elites += 1;
+    if (Math.hypot(e.x - world.state.beacon.x, e.y - world.state.beacon.y) < 220) beaconNear += 1;
   }
   window.__voidstrike = {
     shot: shotName,
@@ -111,12 +116,18 @@ if (shotName) {
     dashes: world.state.dashes,
     bombsUsed: world.state.bombsUsed,
     lives: world.state.lives,
+    beaconHp: world.state.beacon.hp,
+    beaconMaxHp: world.state.beacon.maxHp,
+    siege: world.state.siege,
+    beaconNear,
+    guardianKills: world.state.guardianKills,
+    overCause: world.state.overCause,
   };
 } else {
   // ---- Normal play. ----
   window.addEventListener('resize', fitCanvas);
   fitCanvas();
-  setStatus('VOIDSTRIKE. Press Enter or click to launch.');
+  setStatus('VOIDSTRIKE. Defend the Last Star. Press Enter or click to launch.');
 
   let last = performance.now();
   let accumulator = 0;
@@ -273,6 +284,11 @@ if (shotName) {
         draft: s.upgradeDraft ? s.upgradeDraft.options.map((o) => o.id) : null,
         bossPhase: s.boss ? s.boss.phase : -1,
         best,
+        beaconHp: s.beacon.hp,
+        beaconMaxHp: s.beacon.maxHp,
+        siege: s.siege,
+        guardianKills: s.guardianKills,
+        overCause: s.overCause,
       };
     },
     start() {

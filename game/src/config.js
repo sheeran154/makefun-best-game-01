@@ -1,5 +1,9 @@
-// VOIDSTRIKE v2 — tuning constants. One place for every number that shapes the
+// VOIDSTRIKE v3 — tuning constants. One place for every number that shapes the
 // game, so balance lives here and nowhere else.
+//
+// v3 systems: the Last Star beacon — a central objective enemies besiege on
+// every 3rd wave and on boss waves. Kill foes near it for a Guardian bonus;
+// if its hull hits zero, the run ends.
 export const VIEW = { width: 1280, height: 720 };
 export const STEP = 1 / 60;
 
@@ -60,6 +64,32 @@ export const VICTORY_WAVE = 10; // clearing the wave-10 boss wins the sector
 export const COMBO_WINDOW = 2.5; // seconds between kills to keep the combo alive
 export const COMBO_MAX = 8;
 
+// The Last Star: the beacon every siege wave tries to kill. It sits near the
+// middle of the field and glows warm gold; enemies with an ember ring are
+// besieging it right now.
+export const BEACON = {
+  x: 640,
+  y: 330,
+  radius: 26,
+  maxHp: 12,
+  guardianRadius: 260, // kills this close to the beacon earn the bonus
+  guardianBonus: 100, // flat bonus score per nearby kill, times the combo
+  ramDamage: 1, // hull lost when a besieger rams the beacon
+  enemyRamDamage: 3, // damage the rammer takes for the hit
+  repairPerWave: 2, // hull mended on every wave clear
+};
+
+// Siege waves: every 3rd wave, plus every boss wave. On a siege wave every
+// non-boss enemy hunts the beacon instead of the player.
+export const SIEGE_EVERY = 3;
+
+// Sector names, shown in the wave banner so every wave has a place.
+export const SECTOR_NAMES = [
+  'THE RIFT GATE', 'THE DIMMING', 'THE LONG NIGHT', 'THE EMBER REACH',
+  'THE HOLLOW', 'THE LAST LIGHT', 'THE DUSK FIELD', 'THE QUIET',
+  'THE PALE MARCH', 'THE DAWN',
+];
+
 export const COLORS = {
   bg0: '#05010f',
   bg1: '#0d0221',
@@ -72,6 +102,8 @@ export const COLORS = {
   gold: '#ffd75e',
   danger: '#ff2e63',
   elite: '#ffd75e',
+  beacon: '#ffd75e',
+  ember: '#ff6a2a',
 };
 
 // The upgrade draft pool. Every entry stacks when picked again; the caps live

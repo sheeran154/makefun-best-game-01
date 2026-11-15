@@ -1,8 +1,8 @@
-// VOIDSTRIKE v2 — every pixel the player sees. It draws only what world.js holds:
-// the parallax nebula sky, the ships, the bullets, the HUD, the upgrade draft
-// and the menu screens. No game logic lives here; change a look without
-// touching a rule.
-import { VIEW, PLAYER, POWERUP, ENEMY, COLORS, UPGRADES, DASH } from './config.js';
+// VOIDSTRIKE v3 — every pixel the player sees. It draws only what world.js holds:
+// the parallax nebula sky, the Last Star beacon, the ships, the bullets, the
+// HUD, the upgrade draft and the menu screens. No game logic lives here;
+// change a look without touching a rule.
+import { VIEW, PLAYER, POWERUP, ENEMY, COLORS, UPGRADES, DASH, BEACON } from './config.js';
 import { SCREEN_TITLE, SCREEN_PAUSE, SCREEN_OVER, SCREEN_VICTORY, SCREEN_UPGRADE } from './world.js';
 
 const TAU = Math.PI * 2;
@@ -285,6 +285,20 @@ function drawEnemy(ctx, e, time) {
     ctx.lineWidth = 4;
     ctx.stroke();
   }
+  // Besiegers wear an ember ring, so the threat to the beacon reads at a
+  // glance — gold rings are elites, ember rings are besieging the Last Star.
+  if (e.siege && e.kind !== 'boss') {
+    ctx.beginPath();
+    ctx.arc(0, 0, e.radius + 4, 0, TAU);
+    ctx.strokeStyle = COLORS.ember;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, 0, e.radius + 4, -Math.PI / 2, -Math.PI / 2 + TAU * Math.max(0, e.hp / e.maxHp));
+    ctx.strokeStyle = '#ffb27a';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
   // Elites wear a gold ring so they read at a glance.
   if (e.elite && e.kind !== 'boss') {
     ctx.beginPath();
@@ -298,6 +312,76 @@ function drawEnemy(ctx, e, time) {
     ctx.lineWidth = 1.5;
     ctx.stroke();
   }
+  ctx.restore();
+}
+
+// The Last Star: a warm gold star at the middle of the field, the thing the
+// whole run is about. A wide soft glow marks its light, a four-point star is
+// its core, and a gold ring shows its hull — red when it is nearly gone.
+// `ox`/`oy` draw it somewhere else than its real position (the title screen
+// keeps it off the briefing text).
+function drawBeacon(ctx, world, time, ox = null, oy = null) {
+  const b = world.state.beacon;
+  const x = ox === null ? b.x : ox;
+  const y = oy === null ? b.y : oy;
+  const pulse = 1 + Math.sin(time * 2.2) * 0.06;
+  const hpFrac = Math.max(0, b.hp / b.maxHp);
+  const dying = b.hp > 0 && b.hp <= 4;
+  ctx.save();
+  // Wide warm light over the field.
+  ctx.globalCompositeOperation = 'lighter';
+  const glowR = 190 * pulse;
+  const g = ctx.createRadialGradient(x, y, 0, x, y, glowR);
+  g.addColorStop(0, b.hp > 0 ? 'rgba(255, 215, 94, 0.20)' : 'rgba(255, 46, 99, 0.10)');
+  g.addColorStop(1, 'rgba(255, 215, 94, 0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(x, y, glowR, 0, TAU);
+  ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+  // Four-point star core.
+  const r = 20 * pulse;
+  ctx.translate(x, y);
+  ctx.rotate(Math.sin(time * 0.8) * 0.08);
+  ctx.shadowColor = '#ffd75e';
+  ctx.shadowBlur = 24;
+  ctx.beginPath();
+  ctx.moveTo(0, -r * 1.5);
+  ctx.quadraticCurveTo(0, 0, r * 1.5, 0);
+  ctx.quadraticCurveTo(0, 0, 0, r * 1.5);
+  ctx.quadraticCurveTo(0, 0, -r * 1.5, 0);
+  ctx.quadraticCurveTo(0, 0, 0, -r * 1.5);
+  ctx.closePath();
+  ctx.fillStyle = b.hp > 0 ? '#ffe9a8' : '#5a1020';
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.beginPath();
+  ctx.arc(0, 0, 6, 0, TAU);
+  ctx.fillStyle = b.hp > 0 ? '#ffffff' : '#ff2e63';
+  ctx.fill();
+  ctx.restore();
+  // Hull ring around the star.
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = '#3a2c10';
+  ctx.beginPath();
+  ctx.arc(0, 0, BEACON.radius + 12, 0, TAU);
+  ctx.stroke();
+  if (b.hp > 0) {
+    ctx.strokeStyle = dying ? '#ff2e63' : '#ffd75e';
+    ctx.beginPath();
+    ctx.arc(0, 0, BEACON.radius + 12, -Math.PI / 2, -Math.PI / 2 + TAU * hpFrac);
+    ctx.stroke();
+  }
+  ctx.restore();
+  // Name under the star.
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = dying ? '#ff2e63' : '#ffd75e';
+  ctx.font = 'bold 11px monospace';
+  ctx.fillText('LAST STAR', x, y + BEACON.radius + 26);
   ctx.restore();
 }
 
@@ -373,6 +457,26 @@ function drawHud(ctx, world) {
   ctx.fillStyle = COLORS.text;
   ctx.font = 'bold 22px monospace';
   ctx.fillText(`WAVE ${s.wave}`, VIEW.width / 2, 16);
+  // The Last Star's hull, right under the wave indicator.
+  {
+    const bw = 200;
+    const bx = (VIEW.width - bw) / 2;
+    const by = 44;
+    const frac = Math.max(0, s.beacon.hp / s.beacon.maxHp);
+    ctx.fillStyle = '#00000088';
+    rr(ctx, bx - 6, by - 4, bw + 12, 16, 5);
+    ctx.fill();
+    ctx.fillStyle = '#3a2c10';
+    ctx.fillRect(bx, by, bw, 8);
+    ctx.fillStyle = s.beacon.hp <= 4 ? '#ff2e63' : '#ffd75e';
+    ctx.fillRect(bx, by, bw * frac, 8);
+    ctx.strokeStyle = '#ffd75e';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bx, by, bw, 8);
+    ctx.fillStyle = s.beacon.hp <= 4 ? '#ff2e63' : '#ffd75e';
+    ctx.font = 'bold 11px monospace';
+    ctx.fillText(`LAST STAR  ${s.beacon.hp}/${s.beacon.maxHp}`, VIEW.width / 2, by + 14);
+  }
   // Lives as little ships.
   ctx.textAlign = 'right';
   ctx.font = 'bold 13px monospace';
@@ -437,11 +541,11 @@ function drawHud(ctx, world) {
   ctx.fillRect(172, 674, 100 * dashFrac, 8);
   ctx.fillStyle = '#ff2e63';
   ctx.fillText(`BOMB ${'◆'.repeat(s.bombs)}${'◇'.repeat(Math.max(0, s.bombsMax - s.bombs))}  [B]`, 20, 694);
-  // Boss HP bar.
+  // Boss HP bar (below the beacon bar, so the two never overlap).
   if (s.boss) {
     const bw = 520;
     const bx = (VIEW.width - bw) / 2;
-    const by = 52;
+    const by = 76;
     const frac = Math.max(0, s.boss.hp / s.boss.maxHp);
     ctx.fillStyle = '#00000088';
     rr(ctx, bx - 8, by - 8, bw + 16, 30, 6);
@@ -506,11 +610,11 @@ function drawTitle(ctx, world, best) {
   ctx.fillText('— NEON SECTOR DEFENSE —', cx, 224);
   ctx.fillStyle = COLORS.text;
   ctx.font = '20px monospace';
-  ctx.fillText('Hostile swarms are pouring through the rift.', cx, 288);
-  ctx.fillText('Hold the line. Chain kills. Break the Void Maw.', cx, 314);
+  ctx.fillText('The Last Star is dying. Hold the beacon until dawn.', cx, 288);
+  ctx.fillText('You are NOVA-7, Keeper of the Last Star.', cx, 314);
   ctx.fillStyle = '#ffd75e';
   ctx.font = 'bold 16px monospace';
-  ctx.fillText('NEW: upgrade drafts · dash · bombs · elites · a two-phase boss', cx, 344);
+  ctx.fillText('NEW: defend the beacon · siege waves · guardian bonus', cx, 344);
   panel(ctx, cx - 330, 360, 660, 200);
   ctx.fillStyle = '#ffd75e';
   ctx.font = 'bold 16px monospace';
@@ -522,7 +626,8 @@ function drawTitle(ctx, world, best) {
     'SHIFT / R-CLICK — dash     B — bomb     P — pause     R — restart',
     'After every wave: pick 1 of 3 UPGRADES — damage, multishot, pierce…',
     'Chain kills for a combo up to x8. Grab S / W / R / B drops.',
-    'Clear the WAVE 10 boss to win the sector — then keep going.',
+    'EMBER-RINGED foes besiege the beacon — slay them near it: GUARDIAN bonus.',
+    'If the beacon falls, the run ends. Clear the WAVE 10 boss to win.',
   ];
   lines.forEach((line, i) => ctx.fillText(line, cx, 414 + i * 24));
   if (best > 0) {
@@ -606,6 +711,10 @@ function drawUpgrade(ctx, world) {
   } else {
     ctx.fillText('Your first pick starts the build.', cx, 548);
   }
+  // The beacon, mended between waves — the run's other life total.
+  ctx.fillStyle = s.beacon.hp <= 4 ? '#ff2e63' : '#ffd75e';
+  ctx.font = 'bold 15px monospace';
+  ctx.fillText(`BEACON  ${s.beacon.hp}/${s.beacon.maxHp} — mended +${BEACON.repairPerWave} after every cleared wave`, cx, 606);
   ctx.restore();
 }
 
@@ -632,12 +741,18 @@ function drawEnd(ctx, world, victory) {
   panel(ctx, cx - 340, 140, 680, 440);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
+  const beaconLost = !victory && s.overCause === 'beacon';
   ctx.fillStyle = victory ? '#3dffc8' : '#ff2e63';
-  ctx.font = 'bold 54px monospace';
-  ctx.fillText(victory ? 'SECTOR CLEARED!' : 'GAME OVER', cx, 200);
+  ctx.font = victory || beaconLost ? 'bold 46px monospace' : 'bold 54px monospace';
+  ctx.fillText(victory ? 'THE LAST STAR ENDURES' : beaconLost ? 'THE BEACON HAS FALLEN' : 'GAME OVER', cx, 200);
   ctx.fillStyle = COLORS.text;
   ctx.font = '20px monospace';
-  ctx.fillText(victory ? 'The Void Maw is dust. The sector is yours, pilot.' : 'Your fighter went down in the void.', cx, 256);
+  ctx.fillText(
+    victory ? 'The Void Maw is dust. The beacon still burns, pilot.'
+      : beaconLost ? 'The Last Star went dark. The sector is lost.'
+        : 'Your fighter went down in the void.',
+    cx, 256,
+  );
   ctx.fillStyle = '#ffd75e';
   ctx.font = 'bold 30px monospace';
   ctx.fillText(`SCORE  ${s.score}`, cx, 316);
@@ -665,7 +780,9 @@ function drawEnd(ctx, world, victory) {
   }
   ctx.fillStyle = COLORS.text;
   ctx.font = '18px monospace';
-  ctx.fillText(`DASHES  ${s.dashes}      BOMBS USED  ${s.bombsUsed}`, cx, 484);
+  ctx.fillText(`DASHES  ${s.dashes}      BOMBS USED  ${s.bombsUsed}`, cx, 478);
+  ctx.fillStyle = '#ffd75e';
+  ctx.fillText(`BEACON  ${s.beacon.hp}/${s.beacon.maxHp}      GUARDIAN KILLS  ${s.guardianKills}`, cx, 504);
   ctx.fillStyle = Math.sin(world.time * 4) > 0 ? '#3dffc8' : '#1d7a64';
   ctx.font = 'bold 20px monospace';
   ctx.fillText(victory ? 'ENTER — FLY ENDLESS MODE      R — RESTART' : 'R — RETRY      ENTER — MENU', cx, 528);
@@ -682,6 +799,11 @@ export function render(ctx, world, best) {
     ctx.translate((world.rng() * 2 - 1) * m, (world.rng() * 2 - 1) * m);
   }
   drawBackground(ctx, world, time);
+
+  // The Last Star: mid-field in play, but off to the side on the title
+  // screen so its star never covers the briefing text.
+  if (s.screen === SCREEN_TITLE) drawBeacon(ctx, world, time, 1060, 360);
+  else drawBeacon(ctx, world, time);
 
   // Boss entrance telegraph: a flashing marker where the Maw will arrive.
   if (s.bossWarning > 0 && s.boss) {
@@ -765,6 +887,15 @@ export function render(ctx, world, best) {
       ctx.fill();
       ctx.restore();
       drawShip(ctx, p.x, p.y, p.angle, 1, COLORS.player, COLORS.playerCore);
+      // The Keeper's gold rim: NOVA-7's ship is trimmed in the beacon's gold.
+      ctx.save();
+      ctx.strokeStyle = '#ffd75e';
+      ctx.globalAlpha = 0.85;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 20, 0, TAU);
+      ctx.stroke();
+      ctx.restore();
       if (p.shield > 0) {
         ctx.save();
         ctx.strokeStyle = '#4dd7ff';

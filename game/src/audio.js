@@ -120,4 +120,18 @@ export const sfx = {
     tone({ type: 'sawtooth', from: 180, to: 520, dur: 0.35, vol: 0.3 });
     tone({ type: 'sawtooth', from: 180, to: 520, dur: 0.35, vol: 0.3, when: 0.4 });
   },
+  // v3: a dull alarm thud when a besieger rams the beacon.
+  beaconHit() {
+    tone({ type: 'square', from: 140, to: 70, dur: 0.2, vol: 0.4 });
+    tone({ type: 'sine', from: 880, to: 660, dur: 0.12, vol: 0.2, when: 0.02 });
+  },
+  // v3: a bright chime for a Guardian kill near the beacon.
+  guardian() {
+    [1047, 1319].forEach((f, i) => tone({ type: 'triangle', from: f, dur: 0.1, vol: 0.3, when: i * 0.05 }));
+  },
+  // v3: the long low wail of the beacon going dark.
+  beaconDown() {
+    tone({ type: 'sawtooth', from: 220, to: 40, dur: 1.2, vol: 0.5 });
+    noise({ dur: 1.0, vol: 0.5, freq: 500 });
+  },
 };
