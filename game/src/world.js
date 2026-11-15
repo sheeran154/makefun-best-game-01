@@ -1,8 +1,13 @@
-// VOIDSTRIKE — the world: one object holding every moving thing, the wave
+// VOIDSTRIKE v2 — the world: one object holding every moving thing, the wave
 // director, collisions and scoring. It knows nothing about the canvas or the DOM;
 // render.js draws whatever state it holds. All randomness flows through the
 // seeded RNG, so a seed replays the same game exactly.
-import { VIEW, STEP, PLAYER, POWERUP, ENEMY, BOSS_WAVE_EVERY, VICTORY_WAVE, COMBO_WINDOW, COMBO_MAX, wavePlan } from './config.js';
+//
+// v2 systems: a between-wave upgrade draft (pick 1 of 3 cards), a dash with
+// i-frames, a screen-clearing bomb, two new enemy kinds (slicer, carrier that
+// splits into drones), elite variants from wave 4, and a second phase for the
+// wave-10 Void Maw.
+import { VIEW, STEP, PLAYER, DASH, BOMB, POWERUP, ENEMY, ELITE_MIN_WAVE, ELITE_CHANCE, BOSS_WAVE_EVERY, VICTORY_WAVE, COMBO_WINDOW, COMBO_MAX, UPGRADES, wavePlan } from './config.js';
 import { mulberry32, range, pick, shuffle } from './random.js';
 
 export const SCREEN_TITLE = 'title';
@@ -10,6 +15,7 @@ export const SCREEN_PLAY = 'play';
 export const SCREEN_PAUSE = 'pause';
 export const SCREEN_OVER = 'over';
 export const SCREEN_VICTORY = 'victory';
+export const SCREEN_UPGRADE = 'upgrade';
 
 export const EVENT_WAVE_CLEAR = 'wave-clear';
 export const EVENT_GAME_OVER = 'game-over';
@@ -36,16 +42,24 @@ function makeStars(rng) {
   return stars;
 }
 
+// Three depth layers of nebula blobs: far layers drift slowest and dimmest,
+// near layers drift fastest and brightest — a parallax sky.
 function makeNebulae(rng) {
   const hues = ['#3b0f6e', '#0f3a6e', '#6e0f3a', '#0f6e5a'];
   const blobs = [];
-  for (let i = 0; i < 5; i += 1) {
-    blobs.push({
-      x: rng() * VIEW.width,
-      y: rng() * VIEW.height,
-      r: 180 + rng() * 220,
-      color: hues[i % hues.length],
-    });
+  const perLayer = [3, 3, 2];
+  for (let layer = 0; layer < 3; layer += 1) {
+    for (let i = 0; i < perLayer[layer]; i += 1) {
+      blobs.push({
+        x: rng() * VIEW.width,
+        y: rng() * VIEW.height,
+        r: 180 + rng() * 220,
+        color: hues[(layer * 2 + i) % hues.length],
+        layer,
+        speed: 5 + layer * 9,
+        phase: rng() * TAU,
+      });
+    }
   }
   return blobs;
 }
@@ -76,15 +90,22 @@ export function createWorld(seed) {
       kills: 0,
       shotsFired: 0,
       hits: 0,
+      dashes: 0,
+      bombsUsed: 0,
       endless: false,
       waveActive: false,
       spawnQueue: [],
       spawnTimer: 0,
       breather: 0,
       boss: null,
+      bossWarning: 0,
       banner: null,
       shake: 0,
       flash: 0,
+      bombs: BOMB.startStock,
+      bombsMax: BOMB.maxStock,
+      upgradesPicked: [],
+      upgradeDraft: null,
       player: {
         x: VIEW.width / 2,
         y: PLAYER.respawnY,
@@ -98,6 +119,14 @@ export function createWorld(seed) {
         rapidTimer: 0,
         alive: true,
         deathTimer: 0,
+        dashCooldown: 0,
+        dashTime: 0,
+        dashDir: { x: 0, y: -1 },
+        // Drafted upgrades, counted per pick. All stack; caps live in applyUpgrade.
+        up: {
+          damage: 0, firerate: 0, speed: 0, multishot: 0, pierce: 0,
+          shield: 0, magnet: 0, bomb: 0, combo: 0, maxlife: 0,
+        },
       },
       enemies: [],
       bullets: [],
@@ -131,6 +160,17 @@ export function createWorld(seed) {
     }
   }
 
+  // A dash afterimage: a fading ghost of the ship, drawn as a silhouette.
+  function ghost(state, p) {
+    state.particles.push({
+      x: p.x, y: p.y,
+      vx: 0, vy: 0,
+      life: 0.32, maxLife: 0.32,
+      size: 14, color: '#3dffc8',
+      drag: 1, ghost: true, angle: p.angle,
+    });
+  }
+
   function startWave(state, wave) {
     state.wave = wave;
     state.waveActive = true;
@@ -145,13 +185,12 @@ export function createWorld(seed) {
     }
   }
 
-  function spawnEnemy(state, kind) {
+  function makeEnemy(state, kind, x, y) {
     const def = ENEMY[kind];
-    const x = kind === 'boss' ? VIEW.width / 2 : range(rng, 50, VIEW.width - 50);
     const enemy = {
       kind,
       x,
-      y: kind === 'boss' ? -80 : -40,
+      y,
       vx: 0,
       vy: 0,
       hp: def.hp,
@@ -166,18 +205,48 @@ export function createWorld(seed) {
       attack: 0,
       attackTimer: 2.5,
       phase: 0,
+      elite: false,
+      // Slicer charge state.
+      charging: false,
+      chargeT: 0,
+      chargeTimer: range(rng, 0.8, 1.6),
+      cvx: 0,
+      cvy: 1,
+      // Boss spiral state.
+      spiralT: 0,
+      spiralTimer: 0,
+      spiralAngle: 0,
+      // Fresh spawns cannot ram for a moment (carrier drones spawn on the player).
+      spawnGrace: 0,
       alive: true,
     };
     if (kind === 'boss') {
       enemy.hp = def.hp + (state.wave - BOSS_WAVE_EVERY) * 40;
       enemy.maxHp = enemy.hp;
       state.boss = enemy;
+      state.bossWarning = 1.6;
+    } else if (state.wave >= ELITE_MIN_WAVE && rng() < ELITE_CHANCE) {
+      // Elite: gold trim, 3x hull, 2x score, always drops a power-up.
+      enemy.elite = true;
+      enemy.hp *= 3;
+      enemy.maxHp = enemy.hp;
+      enemy.score *= 2;
     }
-    state.enemies.push(enemy);
+    return enemy;
   }
 
-  function dropPowerup(state, x, y) {
-    if (rng() >= POWERUP.dropChance) return;
+  function spawnEnemy(state, kind) {
+    const x = kind === 'boss' ? VIEW.width / 2 : range(rng, 50, VIEW.width - 50);
+    const y = kind === 'boss' ? -80 : -40;
+    state.enemies.push(makeEnemy(state, kind, x, y));
+  }
+
+  function dropPowerup(state, x, y, force = false) {
+    if (!force && rng() >= POWERUP.dropChance) return;
+    if (rng() < POWERUP.bombDropChance) {
+      state.powerups.push({ x, y, kind: 'bomb', vy: POWERUP.fallSpeed, t: 0 });
+      return;
+    }
     const roll = rng();
     let kind = 'shield';
     if (roll < 0.3) kind = 'shield';
@@ -189,8 +258,9 @@ export function createWorld(seed) {
 
   function killEnemy(state, enemy, awardScore = true) {
     enemy.alive = false;
-    burst(state, enemy.x, enemy.y, enemy.color, enemy.kind === 'boss' ? 90 : 22, enemy.kind === 'boss' ? 420 : 260, enemy.kind === 'boss' ? 5 : 3);
-    burst(state, enemy.x, enemy.y, '#ffffff', 8, 180, 2);
+    const big = enemy.kind === 'boss' || enemy.kind === 'carrier';
+    burst(state, enemy.x, enemy.y, enemy.color, enemy.kind === 'boss' ? 140 : big ? 46 : 30, enemy.kind === 'boss' ? 420 : 280, enemy.kind === 'boss' ? 5 : 3);
+    burst(state, enemy.x, enemy.y, '#ffffff', enemy.kind === 'boss' ? 16 : 8, 180, 2);
     if (enemy.kind === 'boss') {
       state.boss = null;
       state.shake = Math.max(state.shake, 18);
@@ -198,16 +268,26 @@ export function createWorld(seed) {
     } else {
       state.shake = Math.max(state.shake, 4);
     }
+    if (enemy.kind === 'carrier') {
+      // The carrier splits into three fast drones that swarm the player.
+      for (let i = -1; i <= 1; i += 1) {
+        const d = makeEnemy(state, 'drone', enemy.x + i * 44, enemy.y + 24);
+        d.spawnGrace = 0.4;
+        state.enemies.push(d);
+      }
+    }
     if (awardScore) {
+      const window = COMBO_WINDOW + state.player.up.combo;
       state.combo += 1;
-      state.comboTimer = COMBO_WINDOW;
+      state.comboTimer = window;
       const mult = Math.min(state.combo, COMBO_MAX);
       const gained = enemy.score * mult;
       state.score += gained;
       state.kills += 1;
       addFloater(state, enemy.x, enemy.y, `+${gained}`, mult > 1 ? '#ffd75e' : '#e8f6ff', mult > 1 ? 19 : 15);
       if (mult >= 4) addFloater(state, enemy.x, enemy.y - 22, `COMBO x${mult}`, '#ffd75e', 15);
-      dropPowerup(state, enemy.x, enemy.y);
+      if (enemy.elite) addFloater(state, enemy.x, enemy.y + 22, 'ELITE DOWN', '#ffd75e', 15);
+      dropPowerup(state, enemy.x, enemy.y, enemy.elite);
       world.events.push(enemy.kind === 'boss' ? 'boss-kill' : 'kill');
     }
   }
@@ -248,21 +328,28 @@ export function createWorld(seed) {
 
   function firePlayer(state) {
     const p = state.player;
-    const interval = p.rapidTimer > 0 ? PLAYER.fireInterval * 0.55 : PLAYER.fireInterval;
+    const interval = Math.max(
+      0.06,
+      (p.rapidTimer > 0 ? PLAYER.fireInterval * 0.55 : PLAYER.fireInterval) * Math.pow(0.88, p.up.firerate),
+    );
     if (p.fireCooldown > 0) return;
     p.fireCooldown = interval;
-    const spread = p.spreadTimer > 0;
-    const angles = spread ? [-0.16, 0, 0.16] : [0];
+    const extra = p.up.multishot + (p.spreadTimer > 0 ? 2 : 0);
+    const count = 1 + extra;
     const base = p.angle;
-    for (const off of angles) {
+    for (let i = 0; i < count; i += 1) {
+      const off = (i - (count - 1) / 2) * 0.14;
       const a = base + off;
       state.shots.push({
         x: p.x + Math.cos(a) * 20,
         y: p.y + Math.sin(a) * 20,
         vx: Math.cos(a) * PLAYER.bulletSpeed,
         vy: Math.sin(a) * PLAYER.bulletSpeed,
-        damage: PLAYER.bulletDamage,
+        damage: PLAYER.bulletDamage + p.up.damage,
         radius: 4,
+        pierce: p.up.pierce,
+        hitSet: new Set(),
+        alive: true,
       });
     }
     state.shotsFired += 1;
@@ -276,14 +363,38 @@ export function createWorld(seed) {
       vx: Math.cos(angle) * speed,
       vy: Math.sin(angle) * speed,
       radius: 5,
+      alive: true,
     });
     world.events.push('enemy-shoot');
+  }
+
+  function detonateBomb(state) {
+    const p = state.player;
+    if (state.bombs <= 0 || !p.alive) return;
+    state.bombs -= 1;
+    state.bombsUsed += 1;
+    for (const b of state.bullets) {
+      if (!b.alive) continue;
+      b.alive = false;
+      burst(state, b.x, b.y, '#ff4d6d', 2, 120, 2);
+    }
+    // Snapshot: killing a carrier spawns drones, and they must not eat bomb damage.
+    for (const enemy of [...state.enemies]) {
+      if (!enemy.alive) continue;
+      enemy.hp -= BOMB.damage;
+      if (enemy.hp <= 0) killEnemy(state, enemy);
+    }
+    state.shake = Math.max(state.shake, 20);
+    state.flash = 0.6;
+    burst(state, p.x, p.y, '#ffd75e', 40, 420, 4);
+    world.events.push('bomb');
   }
 
   function updateEnemy(state, enemy, dt) {
     const p = state.player;
     enemy.t += dt;
     enemy.fireTimer -= dt;
+    enemy.spawnGrace = Math.max(0, enemy.spawnGrace - dt);
     const dx = p.x - enemy.x;
     const dy = p.y - enemy.y;
     const dist = Math.hypot(dx, dy) || 1;
@@ -325,15 +436,62 @@ export function createWorld(seed) {
           }
         }
       }
+    } else if (enemy.kind === 'slicer') {
+      // Fast zigzag descent, then a telegraphed charge straight at the player.
+      if (enemy.charging) {
+        enemy.chargeT -= dt;
+        enemy.x += enemy.cvx * 520 * dt;
+        enemy.y += enemy.cvy * 520 * dt;
+        if (enemy.chargeT <= 0) {
+          enemy.charging = false;
+          enemy.chargeTimer = 1.6;
+        }
+      } else {
+        enemy.y += ENEMY.slicer.speed * dt;
+        enemy.x += Math.sin(enemy.t * 6) * 260 * dt;
+        enemy.chargeTimer -= dt;
+        if (enemy.chargeTimer <= 0 && enemy.y > 40 && enemy.y < 420 && p.alive) {
+          enemy.charging = true;
+          enemy.chargeT = 0.5;
+          enemy.cvx = dx / dist;
+          enemy.cvy = dy / dist;
+          world.events.push('enemy-shoot');
+        }
+      }
+    } else if (enemy.kind === 'carrier') {
+      // Slow freighter that hovers and lobs aimed shots; splits on death.
+      if (enemy.y < 110) {
+        enemy.y += ENEMY.carrier.speed * dt;
+      } else {
+        enemy.x += Math.sin(enemy.t * 0.8) * 50 * dt;
+        if (enemy.fireTimer <= 0) {
+          enemy.fireTimer = 2.6;
+          enemyShoot(state, enemy, aim + range(rng, -0.05, 0.05), 220);
+        }
+      }
+    } else if (enemy.kind === 'drone') {
+      // Carrier shrapnel: small, fast, homes in and rams.
+      enemy.y += 90 * dt;
+      enemy.x += (dx / dist) * 150 * dt;
     } else if (enemy.kind === 'boss') {
+      // Phase 2 below half health: faster, a spiral barrage, elite summons.
+      if (enemy.phase === 0 && enemy.hp <= enemy.maxHp * 0.5) {
+        enemy.phase = 1;
+        enemy.attackTimer = 1.2;
+        state.banner = { text: 'VOID MAW ENRAGED', sub: 'PHASE 2 — SPIRAL BARRAGE', t: 2.2, color: '#ff2e63' };
+        burst(state, enemy.x, enemy.y, '#ff2e63', 40, 380, 4);
+        world.events.push('boss-phase2');
+      }
+      const phase2 = enemy.phase === 1;
       if (enemy.y < 120) {
         enemy.y += 60 * dt;
       } else {
-        enemy.x += Math.sin(enemy.t * 0.7) * 110 * dt;
+        enemy.x += Math.sin(enemy.t * 0.7) * (phase2 ? 150 : 110) * dt;
         enemy.attackTimer -= dt;
         if (enemy.attackTimer <= 0) {
-          enemy.attack = (enemy.attack + 1) % 3;
-          enemy.attackTimer = enemy.attack === 2 ? 4.5 : 3.4;
+          const cycle = phase2 ? 4 : 3;
+          enemy.attack = (enemy.attack + 1) % cycle;
+          enemy.attackTimer = (enemy.attack === 2 ? 4.5 : 3.4) * (phase2 ? 0.6 : 1);
           if (enemy.attack === 0) {
             // Radial burst.
             for (let i = 0; i < 16; i += 1) enemyShoot(state, enemy, (i / 16) * TAU, 190);
@@ -341,17 +499,24 @@ export function createWorld(seed) {
           } else if (enemy.attack === 1) {
             enemy.burstLeft = 5;
             enemy.burstTimer = 0;
-          } else {
-            // Summon minions.
+          } else if (enemy.attack === 2) {
+            // Summon minions — elites in phase 2.
             for (let i = 0; i < 3; i += 1) {
-              const m = {
-                kind: 'drifter', x: enemy.x + (i - 1) * 90, y: enemy.y + 50,
-                vx: 0, vy: 0, hp: 1, maxHp: 1, radius: 16, score: 100,
-                color: ENEMY.drifter.color, t: rng() * TAU, fireTimer: 2,
-                burstLeft: 0, burstTimer: 0, attack: 0, attackTimer: 0, phase: 0, alive: true,
-              };
+              const m = makeEnemy(state, 'drifter', enemy.x + (i - 1) * 90, enemy.y + 50);
+              if (phase2) {
+                m.elite = true;
+                m.hp *= 3;
+                m.maxHp = m.hp;
+                m.score *= 2;
+              }
               state.enemies.push(m);
             }
+            world.events.push('boss-attack');
+          } else {
+            // Spiral barrage: a rotating double stream of bullets.
+            enemy.spiralT = 2.8;
+            enemy.spiralTimer = 0;
+            enemy.spiralAngle = rng() * TAU;
             world.events.push('boss-attack');
           }
         }
@@ -361,6 +526,16 @@ export function createWorld(seed) {
             enemy.burstTimer = 0.14;
             enemy.burstLeft -= 1;
             for (const off of [-0.22, 0, 0.22]) enemyShoot(state, enemy, aim + off, 260);
+          }
+        }
+        if (enemy.attack === 3 && enemy.spiralT > 0) {
+          enemy.spiralT -= dt;
+          enemy.spiralTimer -= dt;
+          if (enemy.spiralTimer <= 0) {
+            enemy.spiralTimer = 0.07;
+            enemyShoot(state, enemy, enemy.spiralAngle, 200);
+            enemyShoot(state, enemy, enemy.spiralAngle + Math.PI, 200);
+            enemy.spiralAngle += 0.45;
           }
         }
       }
@@ -389,27 +564,79 @@ export function createWorld(seed) {
       addFloater(state, p.x, p.y - 30, 'RAPID FIRE', '#ff9de2', 18);
       world.events.push('powerup');
     } else if (kind === 'life') {
-      state.lives = Math.min(PLAYER.maxLives, state.lives + 1);
+      state.lives = Math.min(PLAYER.maxLives + p.up.maxlife, state.lives + 1);
       addFloater(state, p.x, p.y - 30, '+1 LIFE', '#3dffc8', 18);
+      world.events.push('powerup');
+    } else if (kind === 'bomb') {
+      state.bombs = Math.min(state.bombsMax, state.bombs + 1);
+      addFloater(state, p.x, p.y - 30, '+1 BOMB', '#ff2e63', 18);
       world.events.push('powerup');
     }
   }
 
+  function rollDraft(state) {
+    return shuffle(rng, [...UPGRADES]).slice(0, 3);
+  }
+
+  // Apply one drafted upgrade, then hand the game back to the next wave.
+  world.applyUpgrade = function applyUpgrade(index) {
+    const state = world.state;
+    if (!state.upgradeDraft) return false;
+    const option = state.upgradeDraft.options[index];
+    if (!option) return false;
+    const p = state.player;
+    const up = p.up;
+    switch (option.id) {
+      case 'damage': up.damage += 1; break;
+      case 'firerate': up.firerate += 1; break;
+      case 'speed': up.speed = Math.min(5, up.speed + 1); break;
+      case 'multishot': up.multishot = Math.min(3, up.multishot + 1); break;
+      case 'pierce': up.pierce = Math.min(3, up.pierce + 1); break;
+      case 'shield':
+        up.shield += 1;
+        p.shield = Math.min(up.shield, p.shield + 1);
+        break;
+      case 'magnet': up.magnet += 1; break;
+      case 'bomb':
+        state.bombsMax += 1;
+        state.bombs = Math.min(state.bombsMax, state.bombs + 2);
+        break;
+      case 'combo': up.combo += 1; break;
+      case 'maxlife':
+        up.maxlife = Math.min(2, up.maxlife + 1);
+        state.lives = Math.min(PLAYER.maxLives + up.maxlife, state.lives + 1);
+        break;
+      default: break;
+    }
+    state.upgradesPicked.push(option.id);
+    addFloater(state, VIEW.width / 2, VIEW.height / 2 - 60, `${option.name} ACQUIRED`, option.color, 22);
+    state.upgradeDraft = null;
+    state.screen = SCREEN_PLAY;
+    state.breather = 2.0;
+    world.events.push('upgrade');
+    return true;
+  };
+
   function collide(state) {
     const p = state.player;
-    // Player shots vs enemies.
+    // Player shots vs enemies (piercing shots keep flying through extras).
     for (const shot of state.shots) {
       if (!shot.alive) continue;
       for (const enemy of state.enemies) {
-        if (!enemy.alive) continue;
+        if (!enemy.alive || shot.hitSet.has(enemy)) continue;
         const dx = shot.x - enemy.x;
         const dy = shot.y - enemy.y;
         const rr = shot.radius + enemy.radius;
         if (dx * dx + dy * dy < rr * rr) {
-          shot.alive = false;
           enemy.hp -= shot.damage;
           state.hits += 1;
           burst(state, shot.x, shot.y, '#ffe9a8', 4, 140, 2);
+          if (shot.pierce > 0) {
+            shot.pierce -= 1;
+            shot.hitSet.add(enemy);
+          } else {
+            shot.alive = false;
+          }
           if (enemy.hp <= 0) killEnemy(state, enemy);
           break;
         }
@@ -428,9 +655,9 @@ export function createWorld(seed) {
         if (!p.alive) return;
       }
     }
-    // Enemies ramming the player.
+    // Enemies ramming the player (fresh carrier drones get a grace moment).
     for (const enemy of state.enemies) {
-      if (!enemy.alive) continue;
+      if (!enemy.alive || enemy.spawnGrace > 0) continue;
       const dx = enemy.x - p.x;
       const dy = enemy.y - p.y;
       const rr = enemy.radius + PLAYER.radius * 0.8;
@@ -477,12 +704,19 @@ export function createWorld(seed) {
     world.time += dt;
     world.events.length = 0;
 
-    // Starfield always scrolls, on every screen.
+    // Starfield and nebulae always scroll, on every screen.
     for (const star of world.stars) {
       star.y += star.speed * dt;
       if (star.y > VIEW.height + 2) {
         star.y = -2;
         star.x = rng() * VIEW.width;
+      }
+    }
+    for (const neb of world.nebulae) {
+      neb.y += neb.speed * dt;
+      if (neb.y - neb.r > VIEW.height) {
+        neb.y = -neb.r;
+        neb.x = rng() * VIEW.width;
       }
     }
     if (state.banner) {
@@ -493,7 +727,7 @@ export function createWorld(seed) {
     state.flash = Math.max(0, state.flash - dt * 1.4);
 
     if (state.screen !== SCREEN_PLAY) {
-      // Particles and floaters still settle on end screens.
+      // Particles and floaters still settle on end screens and the draft.
       updateParticles(state, dt);
       updateFloaters(state, dt);
       if (state.screen === SCREEN_OVER && !state.player.alive) {
@@ -523,18 +757,50 @@ export function createWorld(seed) {
     p.invulnerable = Math.max(0, p.invulnerable - dt);
     p.spreadTimer = Math.max(0, p.spreadTimer - dt);
     p.rapidTimer = Math.max(0, p.rapidTimer - dt);
+    p.dashCooldown = Math.max(0, p.dashCooldown - dt);
     if (state.comboTimer > 0) {
       state.comboTimer -= dt;
       if (state.comboTimer <= 0) state.combo = 0;
     }
+    if (state.bossWarning > 0) state.bossWarning -= dt;
 
-    // Movement + aim.
-    p.x += input.mx * PLAYER.speed * dt;
-    p.y += input.my * PLAYER.speed * dt;
-    p.x = Math.max(PLAYER.radius, Math.min(VIEW.width - PLAYER.radius, p.x));
-    p.y = Math.max(PLAYER.radius, Math.min(VIEW.height - PLAYER.radius, p.y));
+    // Dash: a burst in the move direction (or the aim direction when still),
+    // with brief invulnerability and ghost afterimages.
+    if (input.dash && p.dashCooldown <= 0) {
+      p.dashCooldown = DASH.cooldown;
+      p.dashTime = DASH.duration;
+      p.invulnerable = Math.max(p.invulnerable, DASH.iframes);
+      let dx = input.mx;
+      let dy = input.my;
+      if (dx === 0 && dy === 0) {
+        dx = input.aimX - p.x;
+        dy = input.aimY - p.y;
+      }
+      const len = Math.hypot(dx, dy) || 1;
+      p.dashDir = { x: dx / len, y: dy / len };
+      state.dashes += 1;
+      ghost(state, p);
+      world.events.push('dash');
+    }
+    if (p.dashTime > 0) {
+      p.dashTime -= dt;
+      const speed = PLAYER.speed * (1 + 0.12 * p.up.speed) * DASH.speedMult;
+      p.x += p.dashDir.x * speed * dt;
+      p.y += p.dashDir.y * speed * dt;
+      p.x = Math.max(PLAYER.radius, Math.min(VIEW.width - PLAYER.radius, p.x));
+      p.y = Math.max(PLAYER.radius, Math.min(VIEW.height - PLAYER.radius, p.y));
+      ghost(state, p);
+    } else {
+      // Movement + aim.
+      const speed = PLAYER.speed * (1 + 0.12 * p.up.speed);
+      p.x += input.mx * speed * dt;
+      p.y += input.my * speed * dt;
+      p.x = Math.max(PLAYER.radius, Math.min(VIEW.width - PLAYER.radius, p.x));
+      p.y = Math.max(PLAYER.radius, Math.min(VIEW.height - PLAYER.radius, p.y));
+    }
     p.angle = Math.atan2(input.aimY - p.y, input.aimX - p.x);
     if (input.fire) firePlayer(state);
+    if (input.bomb) detonateBomb(state);
 
     // Wave director.
     if (state.waveActive) {
@@ -558,7 +824,13 @@ export function createWorld(seed) {
           world.events.push(EVENT_VICTORY);
           return world.events;
         }
-        state.breather = 2.5;
+        // Aegis plating recharges one shield between waves.
+        if (p.up.shield > 0) p.shield = Math.min(p.up.shield, p.shield + 1);
+        // Between-wave upgrade draft: the action pauses until a card is picked.
+        state.upgradeDraft = { options: rollDraft(state) };
+        state.screen = SCREEN_UPGRADE;
+        world.events.push('draft');
+        return world.events;
       }
     } else if (state.breather > 0) {
       state.breather -= dt;
@@ -581,6 +853,19 @@ export function createWorld(seed) {
     }
     state.bullets = state.bullets.filter((b) => b.alive);
     for (const pu of state.powerups) {
+      // Tractor web pulls nearby power-ups toward the ship.
+      if (p.up.magnet > 0) {
+        const dx = p.x - pu.x;
+        const dy = p.y - pu.y;
+        const d = Math.hypot(dx, dy) || 1;
+        if (d < 300) {
+          pu.x += (dx / d) * 320 * dt;
+          pu.y += (dy / d) * 320 * dt;
+          pu.t += dt;
+          pu.alive = pu.y < VIEW.height + 20;
+          continue;
+        }
+      }
       pu.y += pu.vy * dt;
       pu.t += dt;
       pu.alive = pu.y < VIEW.height + 20;

@@ -100,4 +100,24 @@ export const sfx = {
     [392, 330, 262, 196].forEach((f, i) => tone({ type: 'sawtooth', from: f, dur: 0.3, vol: 0.25, when: i * 0.16 }));
   },
   click() { tone({ type: 'sine', from: 700, to: 500, dur: 0.06, vol: 0.25 }); },
+  // v2: a short airy whoosh for the dash.
+  dash() {
+    noise({ dur: 0.18, vol: 0.35, freq: 3200 });
+    tone({ type: 'sine', from: 300, to: 900, dur: 0.14, vol: 0.15 });
+  },
+  // v2: a deep detonation for the bomb.
+  bomb() {
+    noise({ dur: 0.8, vol: 0.8, freq: 700 });
+    tone({ type: 'sine', from: 120, to: 30, dur: 0.7, vol: 0.7 });
+    tone({ type: 'square', from: 55, to: 40, dur: 0.5, vol: 0.3, when: 0.05 });
+  },
+  // v2: a bright rising arpeggio when an upgrade is drafted.
+  upgrade() {
+    [440, 554, 659, 880, 1109].forEach((f, i) => tone({ type: 'triangle', from: f, dur: 0.14, vol: 0.32, when: i * 0.06 }));
+  },
+  // v2: the boss's second-phase alarm — two rising wails.
+  phase2() {
+    tone({ type: 'sawtooth', from: 180, to: 520, dur: 0.35, vol: 0.3 });
+    tone({ type: 'sawtooth', from: 180, to: 520, dur: 0.35, vol: 0.3, when: 0.4 });
+  },
 };

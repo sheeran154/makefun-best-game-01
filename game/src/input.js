@@ -1,7 +1,7 @@
 // VOIDSTRIKE — keyboard + mouse input. The game reads this one object every step:
 // held movement keys, the mouse aim point (in logical 1280x720 coordinates) and
-// whether the fire button is down. Edge presses (Enter, R, P, M, Space) are queued
-// so menus never miss a tap.
+// whether the fire button is down. Edge presses (Enter, R, P, M, Space, digits,
+// Shift, right-click) are queued so menus never miss a tap.
 export function createInput(canvas) {
   const keys = new Set();
   const pressed = new Set();
@@ -34,10 +34,19 @@ export function createInput(canvas) {
     const p = toLogical(event);
     mouse.x = p.x;
     mouse.y = p.y;
-    mouse.down = true;
-    pressed.add('MouseClick');
+    if (event.button === 2) {
+      // Right-click: dash. Never fires the gun.
+      pressed.add('MouseRight');
+    } else if (event.button === 0) {
+      mouse.down = true;
+      pressed.add('MouseClick');
+    }
   });
-  window.addEventListener('mouseup', () => { mouse.down = false; });
+  window.addEventListener('mouseup', (event) => {
+    if (event.button === 0) mouse.down = false;
+  });
+  // The browser's own right-click menu would steal the dash; the game owns it.
+  canvas.addEventListener('contextmenu', (event) => event.preventDefault());
 
   return {
     keys,
